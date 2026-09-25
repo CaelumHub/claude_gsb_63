@@ -14,6 +14,7 @@ from .block import Block
 from .blockchain import Blockchain
 from .config import (COINBASE_REWARD, CONTRACT_EVENT_DEDUP_KEY,
                      MAX_TX_PER_BLOCK, MINING_INTERVAL)
+from .factory import ContractFactory
 from .p2p import PeerRegistry, dial_peer, http_get_json, http_post_json
 from .state import ZERO_ADDRESS
 from .storage import DataPaths, atomic_write_json, read_json
@@ -37,6 +38,7 @@ class Node:
         self.txpool = TxPool(max_size=cfg.get("MAX_TX_PER_BLOCK", 1000))
         self.wallets = WalletStore(self.paths.wallets_path)
         self.peers = PeerRegistry()
+        self.factory = ContractFactory(self)
 
         self._mining = False
         self._mine_thread = None

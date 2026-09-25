@@ -14,13 +14,14 @@ from flask_cors import CORS
 from . import crypto
 from .state import ZERO_ADDRESS
 from .storage import read_json, atomic_write_json
+from .factory import FactoryError
 from .transaction import Transaction
 from .templates import template_catalog, get_template, TEMPLATES
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "frontend")
 PAGES = ["index", "wallet", "txpool", "explorer", "deploy", "interact",
-         "nodes", "network", "stats", "admin", "templates"]
+         "nodes", "network", "stats", "admin", "templates", "factory"]
 
 
 def _json(payload, status=200):
@@ -501,6 +502,69 @@ def create_app(node):
         atomic_write_json(os.path.join(node.paths.root,
                                        "custom_templates.json"), custom)
         return _json({"ok": True, "name": name})
+
+    # ================================================================== #
+    # Contract factory (batch issuance + on-chain registry)
+    # ================================================================== #
+    @app.get("/api/factory/info")
+    def factory_info():
+        return _json({"ok": True,
+                      "registry": node.factory.registry_address(),
+                      "stats": node.factory.stats()})
+
+    @app.post("/api/factory/issue")
+    def factory_issue():
+        data = request.get_json(force=True, silent=True) or {}
+        sender = data.get("sender")
+        if not crypto.is_valid_address(sender):
+            return _json({"ok": False, "error": "invalid sender"}, 400)
+        try:
+            fee = float(data.get("fee", 0))
+        except (TypeError, ValueError):
+            return _json({"ok": False, "error": "invalid fee"}, 400)
+        try:
+            result = node.factory.issue(
+                sender, template=data.get("template"),
+                source=data.get("source"),
+                constructor=data.get("constructor"),
+                label=data.get("label", ""), count=data.get("count", 1),
+                fee=fee)
+        except FactoryError as e:
+            return _json({"ok": False, "error": str(e)}, 400)
+        return _json(dict({"ok": True}, **result))
+
+    @app.get("/api/factory/instances")
+    def factory_instances():
+        creator = request.args.get("creator") or None
+        status = request.args.get("status") or None
+        return _json({"ok": True,
+                      "registry": node.factory.registry_address(),
+                      "instances": node.factory.instances(creator, status),
+                      "stats": node.factory.stats()})
+
+    @app.get("/api/factory/stats")
+    def factory_stats():
+        return _json({"ok": True,
+                      "registry": node.factory.registry_address(),
+                      "stats": node.factory.stats()})
+
+    @app.post("/api/factory/status")
+    def factory_set_status():
+        data = request.get_json(force=True, silent=True) or {}
+        sender = data.get("sender")
+        if not crypto.is_valid_address(sender):
+            return _json({"ok": False, "error": "invalid sender"}, 400)
+        try:
+            fee = float(data.get("fee", 0))
+        except (TypeError, ValueError):
+            return _json({"ok": False, "error": "invalid fee"}, 400)
+        try:
+            result = node.factory.set_status(
+                sender, data.get("address", ""), data.get("action", ""),
+                fee=fee)
+        except FactoryError as e:
+            return _json({"ok": False, "error": str(e)}, 400)
+        return _json(dict({"ok": True}, **result))
 
     # ================================================================== #
     # Stats

@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合约工厂 · LightChain</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside id="sidebar"></aside>
+  <div class="main">
+    <header id="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <h1>合约工厂</h1>
+        <p>一键批量发行同一种类的合约实例，统一登记每个实例的地址、创建者与运行状态，支持停用 / 重新启用。</p>
+      </div>
+
+      <div class="grid cols-4">
+        <div class="card stat accent"><div class="label">累计发行</div>
+          <div class="value" id="statTotal">—</div></div>
+        <div class="card stat green"><div class="label">运行中</div>
+          <div class="value" id="statRunning">—</div></div>
+        <div class="card stat amber"><div class="label">已停用</div>
+          <div class="value" id="statStopped">—</div></div>
+        <div class="card stat purple"><div class="label">创建者</div>
+          <div class="value" id="statCreators">—</div></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns: 1.2fr 1fr; margin-top:16px;">
+        <div class="card">
+          <h2>发行新实例</h2>
+          <div class="field"><label>发行账户（本地钱包，记为实例创建者）</label>
+            <select id="issueFrom"></select></div>
+          <div class="field"><label>合约模板（同一种类，可批量发行）</label>
+            <select id="issueTpl" onchange="onTplChange()"></select></div>
+          <div class="field"><label>构造参数 (JSON 数组，传给 init)</label>
+            <input id="issueCtor" class="mono" placeholder='例如 ["MyToken","MT",1000]'></div>
+          <div class="row">
+            <div class="field"><label>发行数量（1–20）</label>
+              <input id="issueCount" type="number" min="1" max="20" step="1" value="1"></div>
+            <div class="field"><label>手续费（每笔交易）</label>
+              <input id="issueFee" type="number" min="0" step="any" value="0"></div>
+          </div>
+          <div class="field"><label>实例标签（可选；批量时自动追加序号）</label>
+            <input id="issueLabel" placeholder="留空则使用模板标题"></div>
+          <button class="btn green" id="issueBtn" onclick="issue()" style="width:100%;">🏭 一键发行</button>
+          <div class="hint" style="margin-top:8px;">每个实例都是真实部署的合约；工厂会逐笔出块确认，并在注册表合约中统一登记。</div>
+        </div>
+
+        <div class="card">
+          <h2>工厂信息</h2>
+          <div class="small" style="line-height:2;">
+            <div><span class="muted">注册表合约：</span>
+              <span class="mono" id="registryAddr">尚未部署</span>
+              <a id="registryLink" class="btn ghost sm" style="display:none;" href="#">交互 →</a></div>
+            <div><span class="muted">说明：</span>注册表在首次发行时自动部署上链，登记数据随状态根提交，重启与同步后依然有效。</div>
+          </div>
+          <hr class="divider">
+          <div class="section-title">各创建者发行情况</div>
+          <div id="creatorStats" class="small"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px;">
+        <div class="flex">
+          <h2 style="margin:0;">已发行实例 <span class="hint" id="instHint"></span></h2>
+          <div class="spacer"></div>
+          <select id="filterCreator" onchange="refresh()" style="max-width:220px;"></select>
+          <select id="filterStatus" onchange="refresh()" style="max-width:140px;">
+            <option value="">全部状态</option>
+            <option value="running">运行中</option>
+            <option value="stopped">已停用</option>
+          </select>
+          <button class="btn ghost sm" onclick="refresh()">刷新</button>
+        </div>
+        <div id="instanceList" style="margin-top:12px;"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/app.js"></script>
+<script>
+window.PAGE = "factory";
+let wallets = [];
+let templates = [];
+
+async function init() {
+  await loadWallets();
+  await loadTemplates();
+  await refresh();
+  pollStatus(8000);
+}
+
+async function loadWallets() {
+  const d = await API.get("/api/wallet/list");
+  wallets = d.wallets;
+  $("#issueFrom").innerHTML = wallets.map((w, i) =>
+    `<option value="${i}">${esc(w.label || fmt.addr(w.address, 6))} (${fmt.amount(w.balance)})</option>`).join("");
+  $("#filterCreator").innerHTML =
+    `<option value="">全部创建者</option>` +
+    wallets.map((w, i) =>
+      `<option value="${w.address}">${esc(w.label || fmt.addr(w.address, 6))}（我）</option>`).join("");
+}
+
+async function loadTemplates() {
+  const d = await API.get("/api/templates");
+  templates = d.templates;
+  $("#issueTpl").innerHTML = templates.map(t =>
+    `<option value="${esc(t.name)}">${esc(t.title)}（${esc(t.category)}）</option>`).join("");
+  onTplChange();
+}
+
+function onTplChange() {
+  const t = templates.find(x => x.name === $("#issueTpl").value);
+  if (!t) return;
+  const ctor = t.constructor || [];
+  $("#issueCtor").placeholder = ctor.length
+    ? "参数: " + ctor.map(c => c.name).join(", ")
+    : "该模板无构造参数，可留空";
+}
+
+function isLocal(addr) { return wallets.some(w => w.address === addr); }
+
+async function issue() {
+  const idx = Number($("#issueFrom").value);
+  if (!wallets[idx]) return toast("请先在钱包页面创建钱包", "err");
+  const tpl = $("#issueTpl").value;
+  if (!tpl) return toast("请选择合约模板", "err");
+  let ctor;
+  const raw = $("#issueCtor").value.trim();
+  if (raw) {
+    try { ctor = JSON.parse(raw); } catch (e) { return toast("构造参数不是合法 JSON", "err"); }
+    if (!Array.isArray(ctor)) return toast("构造参数必须是数组", "err");
+  }
+  const count = parseInt($("#issueCount").value || "1", 10);
+  const fee = parseFloat($("#issueFee").value || 0);
+  const btn = $("#issueBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ 发行中（逐笔出块）…";
+  try {
+    const d = await API.post("/api/factory/issue", {
+      sender: wallets[idx].address, template: tpl, constructor: ctor,
+      label: $("#issueLabel").value.trim(), count, fee,
+    });
+    if (d.ok) {
+      toast(`已发行 ${d.issued.length} 个实例`, "ok");
+      if (d.warning) toast(d.warning, "info", 5000);
+    } else toast(d.error || "发行失败", "err");
+  } catch (e) { toast(e.message, "err"); }
+  btn.disabled = false;
+  btn.textContent = "🏭 一键发行";
+  await refresh();
+}
+
+async function setStatus(address, action) {
+  const rec = lastInstances.find(r => r.address === address);
+  if (!rec) return;
+  try {
+    const d = await API.post("/api/factory/status", {
+      sender: rec.creator, address, action,
+    });
+    if (d.ok) toast(action === "deactivate" ? "实例已停用" : "实例已重新启用", "ok");
+    else toast(d.error || "操作失败", "err");
+  } catch (e) { toast(e.message, "err"); }
+  await refresh();
+}
+
+let lastInstances = [];
+
+async function refresh() {
+  let d;
+  try {
+    const qs = new URLSearchParams();
+    if ($("#filterCreator").value) qs.set("creator", $("#filterCreator").value);
+    if ($("#filterStatus").value) qs.set("status", $("#filterStatus").value);
+    d = await API.get("/api/factory/instances" + (qs.toString() ? "?" + qs : ""));
+  } catch (e) { return; }
+  lastInstances = d.instances;
+  renderStats(d.stats, d.registry);
+  renderInstances(d.instances);
+}
+
+function renderStats(s, registry) {
+  $("#statTotal").textContent = s.total;
+  $("#statRunning").textContent = s.running;
+  $("#statStopped").textContent = s.stopped;
+  $("#statCreators").textContent = s.creators;
+  if (registry) {
+    $("#registryAddr").textContent = fmt.addr(registry, 10);
+    $("#registryAddr").title = registry;
+    const link = $("#registryLink");
+    link.style.display = "";
+    link.href = "interact.html?addr=" + registry;
+  }
+  $("#creatorStats").innerHTML = s.by_creator.length
+    ? s.by_creator.map(c => `
+      <div class="flex" style="padding:4px 0;border-bottom:1px dashed var(--border);">
+        <span class="addr" title="${esc(c.creator)}">${fmt.addr(c.creator, 6)}</span>
+        <span class="spacer"></span>
+        <span class="badge blue sm">共 ${c.total}</span>
+        <span class="badge green sm">运行 ${c.running}</span>
+        <span class="badge red sm">停用 ${c.stopped}</span>
+      </div>`).join("")
+    : `<div class="muted">暂无发行记录</div>`;
+}
+
+function renderInstances(list) {
+  $("#instHint").textContent = `（${list.length} 个）`;
+  const box = $("#instanceList");
+  if (!list.length) {
+    box.innerHTML = `<div class="empty"><div class="big">🏭</div>尚未发行任何实例，使用上方「一键发行」开始</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="table-wrap"><table><thead><tr>
+    <th>#</th><th>实例地址</th><th>类型</th><th>标签</th><th>创建者</th>
+    <th>余额</th><th>状态</th><th>发行高度</th><th></th></tr></thead>
+    <tbody>${list.map(r => `
+      <tr>
+        <td class="mono-num">${r.id}</td>
+        <td class="hash" title="${esc(r.address)}">${fmt.addr(r.address, 8)}</td>
+        <td><span class="badge blue sm">${esc(r.kind)}</span></td>
+        <td>${esc(r.label || "—")}</td>
+        <td class="addr" title="${esc(r.creator)}">${fmt.addr(r.creator, 6)}${isLocal(r.creator) ? ' <span class="badge gray sm">我</span>' : ""}</td>
+        <td class="mono-num">${fmt.amount(r.balance)}</td>
+        <td>${r.status === "running"
+          ? '<span class="badge green">运行中</span>'
+          : '<span class="badge red">已停用</span>'}</td>
+        <td class="mono-num">#${r.height}</td>
+        <td style="white-space:nowrap;">
+          <a class="btn ghost sm" href="interact.html?addr=${esc(r.address)}">交互 →</a>
+          ${isLocal(r.creator) ? (r.status === "running"
+            ? `<button class="btn danger sm" onclick="setStatus('${esc(r.address)}','deactivate')">停用</button>`
+            : `<button class="btn green sm" onclick="setStatus('${esc(r.address)}','reactivate')">启用</button>`) : ""}
+        </td>
+      </tr>`).join("")}</tbody></table></div>`;
+}
+
+document.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>
