@@ -10,6 +10,7 @@ const NAV = [
   { key: "deploy", href: "deploy.html", ico: "🚀", label: "合约部署", group: "合约" },
   { key: "interact", href: "interact.html", ico: "🧪", label: "合约交互", group: "合约" },
   { key: "templates", href: "templates.html", ico: "📚", label: "合约模板库", group: "合约" },
+  { key: "factory", href: "factory.html", ico: "🏭", label: "合约工厂", group: "合约" },
   { key: "nodes", href: "nodes.html", ico: "🖥", label: "节点监控", group: "网络" },
   { key: "network", href: "network.html", ico: "🌐", label: "网络设置", group: "网络" },
   { key: "stats", href: "stats.html", ico: "📊", label: "统计报表", group: "系统" },

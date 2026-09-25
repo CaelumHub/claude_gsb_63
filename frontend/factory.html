@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合约工厂 · LightChain</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="layout">
+  <aside id="sidebar"></aside>
+  <div class="main">
+    <header id="topbar"></header>
+    <main class="content">
+      <div class="page-head">
+        <h1>合约工厂</h1>
+        <p>一键批量发行同一种类的合约实例；登记每个实例的地址、创建者与运行状态（运行中 / 已停用），创建者可随时停用或重新启用，任何人都能查看完整列表与整体统计。</p>
+      </div>
+
+      <!-- 统计概览 -->
+      <div class="grid cols-4" id="overview" style="margin-bottom:16px;">
+        <div class="card stat"><div class="muted small">链上工厂数</div>
+          <div class="big-num" id="stFactories">–</div></div>
+        <div class="card stat"><div class="muted small">累计发行实例</div>
+          <div class="big-num" id="stTotal">–</div></div>
+        <div class="card stat"><div class="muted small">运行中实例</div>
+          <div class="big-num green-text" id="stActive">–</div></div>
+        <div class="card stat"><div class="muted small">已停用实例</div>
+          <div class="big-num red-text" id="stDisabled">–</div></div>
+      </div>
+
+      <div class="grid" style="grid-template-columns: 1.2fr 1fr;">
+        <!-- 部署新工厂 -->
+        <div class="card">
+          <div class="flex">
+            <h2 style="margin:0;">部署新工厂</h2>
+            <div class="spacer"></div>
+            <button class="btn ghost sm" onclick="loadChildTemplates()">载入子合约源码</button>
+          </div>
+          <div class="hint" style="margin:8px 0;">工厂部署时会把子合约源代码登记在链上；之后调用 <code>issue</code> 即可一键发行实例。</div>
+          <div class="field"><label>实例种类名称（kind）</label>
+            <input id="fKind" placeholder="例如：计数器实例"></div>
+          <div class="field"><label>子合约源代码（要批量发行的同一种类合约）</label>
+            <textarea id="fCode" class="mono" rows="10"
+              style="width:100%;font-size:12px;background:var(--panel-2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px;"></textarea></div>
+          <div class="row">
+            <div class="field grow"><label>部署账户（本地钱包）</label><select id="fFrom"></select></div>
+            <div class="field"><label>手续费</label><input id="fFee" type="number" min="0" step="any" value="0" style="width:120px;"></div>
+          </div>
+          <label class="small muted" style="display:flex;align-items:center;gap:4px;margin-bottom:8px;">
+            <input type="checkbox" id="fAutoMine" checked style="width:auto;"> 提交后立即出块确认</label>
+          <button class="btn green" style="width:100%;" onclick="deployFactory()">🏭 部署工厂合约</button>
+        </div>
+
+        <!-- 发行操作 -->
+        <div class="card">
+          <h2>发行 / 管理实例</h2>
+          <div class="field"><label>选择工厂</label>
+            <select id="facSelect" onchange="selectFactory()"></select></div>
+          <div id="facMeta" class="small muted" style="margin-bottom:8px;"></div>
+
+          <div class="section-title">一键发行</div>
+          <div class="row">
+            <div class="field grow"><label>发行数量（批量）</label>
+              <input id="issueN" type="number" min="1" max="50" value="1"></div>
+            <div class="field grow"><label>实例标签（可选）</label>
+              <input id="issueLabel" placeholder="例如：北京节点"></div>
+          </div>
+          <div class="field"><label>子合约构造参数（JSON 数组，可选）</label>
+            <input id="issueArgs" class="mono" placeholder='例如 ["Alice", 100]，无参数留空'></div>
+          <button class="btn primary" style="width:100%;" onclick="issueInstances()">🚀 发行实例</button>
+          <hr class="divider">
+          <div class="section-title">停用 / 重新启用</div>
+          <div class="hint">在下方实例列表中，每个实例的创建者可一键停用或启用自己名下的实例。停用后该实例无法被任何用户调用。</div>
+          <div class="field" style="margin-top:8px;"><label>调用 / 操作账户（本地钱包）</label>
+            <select id="opFrom"></select></div>
+        </div>
+      </div>
+
+      <!-- 工厂列表 -->
+      <div class="card" style="margin-top:16px;">
+        <div class="flex">
+          <h2 style="margin:0;">已部署工厂</h2>
+          <div class="spacer"></div>
+          <select id="viewFilter" class="sm" onchange="renderFactories()">
+            <option value="all">全部工厂</option>
+            <option value="mine">只看我创建的</option>
+          </select>
+          <button class="btn ghost sm" onclick="loadAll()">刷新</button>
+        </div>
+        <div id="factoryList" style="margin-top:12px;"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/app.js"></script>
+<script>
+window.PAGE = "factory";
+let wallets = [];
+let contracts = [];
+let factories = [];
+let currentFactory = null;
+
+async function init() {
+  await loadWallets();
+  await loadAll();
+  pollStatus(6000);
+}
+
+async function loadWallets() {
+  const d = await API.get("/api/wallet/list");
+  wallets = d.wallets;
+  const opts = wallets.map((w, i) =>
+    `<option value="${i}">${esc(w.label || fmt.addr(w.address, 6))} (${fmt.amount(w.balance)})</option>`).join("");
+  $("#fFrom").innerHTML = opts;
+  $("#opFrom").innerHTML = opts;
+}
+
+async function loadAll() {
+  const d = await API.get("/api/contract/list");
+  contracts = d.contracts;
+  factories = contracts.filter(c => c.is_factory);
+  // Aggregate stats from every factory's on-chain storage.
+  let total = 0, active = 0;
+  for (const f of factories) {
+    const s = f.storage || {};
+    total += Number(s.total || 0);
+    active += Number(s.active_count || 0);
+  }
+  $("#stFactories").textContent = factories.length;
+  $("#stTotal").textContent = total;
+  $("#stActive").textContent = active;
+  $("#stDisabled").textContent = total - active;
+  renderFactorySelect();
+  renderFactories();
+  if (currentFactory) selectFactory(currentFactory);
+}
+
+function renderFactorySelect() {
+  const sel = $("#facSelect");
+  if (!factories.length) {
+    sel.innerHTML = `<option value="">（暂无工厂，请先部署）</option>`;
+    $("#facMeta").textContent = "";
+    return;
+  }
+  sel.innerHTML = factories.map(f => {
+    const s = f.storage || {};
+    return `<option value="${esc(f.address)}">${esc(s.kind || "未命名")} · ${fmt.addr(f.address, 6)} · ${s.total || 0} 个实例</option>`;
+  }).join("");
+  if (!currentFactory || !factories.some(f => f.address === currentFactory)) {
+    currentFactory = factories[0].address;
+  }
+  sel.value = currentFactory;
+  selectFactory();
+}
+
+function selectFactory(addr) {
+  if (addr !== undefined) currentFactory = addr;
+  else currentFactory = $("#facSelect").value;
+  const f = factories.find(x => x.address === currentFactory);
+  const meta = $("#facMeta");
+  if (!f) { meta.textContent = ""; return; }
+  const s = f.storage || {};
+  meta.innerHTML = `种类 <b>${esc(s.kind || "未命名")}</b> · 创建者 ${fmt.addr(s.owner, 6)} ·
+    累计 <b>${s.total || 0}</b> · 运行中 <span class="green-text">${s.active_count || 0}</span> ·
+    停用 <span class="red-text">${(s.total || 0) - (s.active_count || 0)}</span>`;
+}
+
+function renderFactories() {
+  const box = $("#factoryList");
+  const filter = $("#viewFilter").value;
+  const myAddr = wallets[Number($("#opFrom").value)]
+    ? wallets[Number($("#opFrom").value)].address : null;
+  let list = factories;
+  if (filter === "mine" && myAddr) list = list.filter(f => f.creator === myAddr);
+  if (!list.length) {
+    box.innerHTML = `<div class="empty"><div class="big">🏭</div>暂无工厂合约${filter === "mine" ? "（当前账户未创建过工厂）" : ""}</div>`;
+    return;
+  }
+  box.innerHTML = list.map(f => factoryCard(f)).join("");
+}
+
+function factoryCard(f) {
+  const s = f.storage || {};
+  const instances = Array.isArray(s.instances) ? s.instances : [];
+  const rows = instances.map(inst => instanceRow(f.address, inst)).join("");
+  return `
+  <div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:14px;">
+    <div class="flex">
+      <span class="badge blue">工厂</span>
+      <b style="margin-left:6px;">${esc(s.kind || "未命名种类")}</b>
+      <span class="mono small muted" style="margin-left:8px;" title="${esc(f.address)}">${esc(f.address)}</span>
+      <span class="spacer"></span>
+      <span class="badge green sm">累计 ${s.total || 0}</span>
+      <span class="badge green sm">运行 ${s.active_count || 0}</span>
+      <span class="badge red sm">停用 ${(s.total || 0) - (s.active_count || 0)}</span>
+      <a class="btn ghost sm" href="interact.html?addr=${esc(f.address)}">交互 →</a>
+    </div>
+    <div class="small muted" style="margin:6px 0;">创建者：<span class="mono">${esc(f.creator)}</span></div>
+    <div class="table-wrap">
+      <table><thead><tr>
+        <th>#</th><th>实例地址</th><th>标签</th><th>创建者</th><th>状态</th><th>操作</th>
+      </tr></thead><tbody>
+      ${rows || `<tr><td colspan="6" class="muted small" style="text-align:center;padding:10px;">尚未发行任何实例</td></tr>`}
+      </tbody></table>
+    </div>
+  </div>`;
+}
+
+function instanceRow(factoryAddr, inst) {
+  const active = inst.active === true;
+  const myAddr = wallets[Number($("#opFrom").value)]
+    ? wallets[Number($("#opFrom").value)].address : null;
+  const isOwner = myAddr && inst.creator === myAddr;
+  const toggle = isOwner
+    ? (active
+        ? `<button class="btn ghost sm" onclick="setActive('${esc(factoryAddr)}','${esc(inst.address)}',false)">⏸ 停用</button>`
+        : `<button class="btn green sm" onclick="setActive('${esc(factoryAddr)}','${esc(inst.address)}',true)">▶ 启用</button>`)
+    : `<span class="hint" title="只有创建者 ${esc(inst.creator)} 可操作">非本人实例</span>`;
+  return `<tr>
+    <td class="mono-num">${inst.index}</td>
+    <td class="hash" title="${esc(inst.address)}">
+      <a href="interact.html?addr=${esc(inst.address)}">${fmt.addr(inst.address, 8)}</a></td>
+    <td>${esc(inst.label || "")}</td>
+    <td class="addr mono small" title="${esc(inst.creator)}">${fmt.addr(inst.creator, 6)}</td>
+    <td>${active
+        ? '<span class="badge green">● 运行中</span>'
+        : '<span class="badge red">○ 已停用</span>'}</td>
+    <td>${toggle}</td>
+  </tr>`;
+}
+
+async function loadChildTemplates() {
+  const d = await API.get("/api/templates");
+  // 工厂模板自身不适合作为子合约源码；其余模板都可批量发行。
+  const names = d.templates.filter(t => t.name !== "factory")
+    .map(t => t.name + " — " + t.title);
+  const n = prompt("选择子合约模板（输入序号）：\n" +
+    names.map((it, i) => `${i}. ${it}`).join("\n"));
+  if (n == null) return;
+  const tpl = d.templates.filter(t => t.name !== "factory")[parseInt(n)];
+  if (!tpl) return toast("序号无效", "err");
+  const full = await API.get("/api/templates/" + tpl.name);
+  $("#fCode").value = full.template.source;
+  if (!$("#fKind").value) $("#fKind").value = tpl.title + "实例";
+  toast("已载入子合约源码：" + tpl.title, "ok");
+}
+
+async function deployFactory() {
+  const idx = Number($("#fFrom").value);
+  if (!wallets[idx]) return toast("请先生成钱包", "err");
+  const code = $("#fCode").value.trim();
+  if (!code) return toast("请填写子合约源代码", "err");
+  const kind = $("#fKind").value.trim();
+  const fee = parseFloat($("#fFee").value || 0);
+  // 工厂模板源码来自内置模板库（保证含登记/停用/统计逻辑）。
+  const tpl = await API.get("/api/templates/factory");
+  const factoryCode = tpl.template.source;
+  try {
+    const d = await API.post("/api/contract/deploy", {
+      sender: wallets[idx].address,
+      code: factoryCode,
+      constructor: [code, kind],
+      fee,
+    });
+    if (!d.ok) return toast(d.reason || d.error, "err");
+    toast("工厂部署交易已提交：" + fmt.addr(d.address, 8), "ok");
+    if ($("#fAutoMine").checked) {
+      await API.post("/api/mine", { miner: wallets[idx].address });
+      toast("已出块，工厂部署确认", "ok");
+    } else {
+      toast("请前往交易池页面出块确认", "info");
+    }
+    await loadAll();
+    currentFactory = d.address;
+    renderFactorySelect();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+async function issueInstances() {
+  const f = factories.find(x => x.address === currentFactory);
+  if (!f) return toast("请先选择或部署工厂", "err");
+  const idx = Number($("#fFrom").value);
+  if (!wallets[idx]) return toast("请先生成钱包", "err");
+  const n = Math.max(1, parseInt($("#issueN").value || "1"));
+  const label = $("#issueLabel").value.trim();
+  let ctorArgs = [];
+  const raw = $("#issueArgs").value.trim();
+  if (raw) {
+    try { ctorArgs = JSON.parse(raw); } catch (e) { return toast("构造参数不是合法 JSON", "err"); }
+    if (!Array.isArray(ctorArgs)) return toast("构造参数必须是数组", "err");
+  }
+  // 单个发行走 issue(label, 构造参数...)；多个走 issue_many(n, label)
+  // （批量实例使用相同构造参数时通过一次循环发行，无构造参数）。
+  let fn, args;
+  if (n === 1) {
+    fn = "issue";
+    args = [label, ...ctorArgs];
+  } else {
+    if (ctorArgs.length) {
+      return toast("批量发行（n&gt;1）暂不支持逐个不同构造参数；请把数量设为 1 逐个发行", "err");
+    }
+    fn = "issue_many";
+    args = [n, label];
+  }
+  try {
+    const d = await API.post(`/api/contract/${f.address}/invoke`, {
+      sender: wallets[idx].address,
+      function: fn, args, fee: 0, mine: true,
+    });
+    if (!d.ok) return toast(d.reason || d.error, "err");
+    toast(`发行交易已确认（txid ${fmt.hash(d.txid, 6)}）`, "ok");
+    await loadAll();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+async function setActive(factoryAddr, instanceAddr, active) {
+  const idx = Number($("#opFrom").value);
+  if (!wallets[idx]) return toast("请先选择操作账户", "err");
+  const fn = active ? "enable" : "disable";
+  if (!confirm(`确认${active ? "启用" : "停用"}实例 ${fmt.addr(instanceAddr, 8)} ？`)) return;
+  try {
+    const d = await API.post(`/api/contract/${factoryAddr}/invoke`, {
+      sender: wallets[idx].address,
+      function: fn, args: [instanceAddr], fee: 0, mine: true,
+    });
+    if (!d.ok) return toast(d.reason || d.error, "err");
+    toast(active ? "实例已重新启用" : "实例已停用", "ok");
+    await loadAll();
+  } catch (e) { toast(e.message, "err"); }
+}
+
+document.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>

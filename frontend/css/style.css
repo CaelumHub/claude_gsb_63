@@ -149,6 +149,10 @@ a:hover { text-decoration: underline; }
 .stat.green { border-top: 2px solid var(--green); }
 .stat.amber { border-top: 2px solid var(--amber); }
 .stat.purple { border-top: 2px solid var(--purple); }
+.big-num { font-size: 28px; font-weight: 700; font-family: var(--mono); margin-top: 4px; }
+.green-text { color: var(--green); }
+.red-text { color: var(--red); }
+.badge.sm { padding: 2px 7px; font-size: 11px; }
 
 /* ---------- Buttons ---------- */
 .btn {

@@ -259,6 +259,181 @@ def get():
     return state.get("count", 0)
 ''',
     },
+    {
+        "name": "factory",
+        "title": "合约工厂（批量发行 / 停用 / 启用）",
+        "category": "工厂",
+        "description": "登记同一种类子合约的源代码，一键批量发行实例，登记地址、创建者、"
+                       "运行状态；创建者可停用/启用自己的实例；任何人可查看完整列表与统计。",
+        "constructor": [
+            {"name": "code", "type": "string", "desc": "要批量发行的子合约源代码"},
+            {"name": "kind", "type": "string", "desc": "实例种类名称（可留空）"},
+        ],
+        "functions": [
+            {"name": "issue", "desc": "发行一个实例，参数: 标签, 子合约构造参数...",
+             "params": ["label", "..."]},
+            {"name": "issue_many", "desc": "批量发行 n 个实例", "params": ["n", "label"]},
+            {"name": "disable", "desc": "停用自己名下的实例", "params": ["instance"]},
+            {"name": "enable", "desc": "重新启用自己名下的实例", "params": ["instance"]},
+            {"name": "instance_info", "desc": "查询单个实例登记信息", "params": ["instance"]},
+            {"name": "all_instances", "desc": "所有已发行实例（含创建者、状态）", "params": []},
+            {"name": "instances_of", "desc": "查询某创建者发行的实例", "params": ["creator"]},
+            {"name": "stats", "desc": "累计发行量 / 运行中 / 已停用", "params": []},
+            {"name": "is_instance_active", "desc": "引擎查询实例是否运行中", "params": ["instance"]},
+        ],
+        "source": '''# 合约工厂：批量发行同一种类的合约实例，并登记实例生命周期
+#
+# 发行：调用 issue(标签, 子合约构造参数...) 即可一键创建一个子合约实例。
+#       子合约地址由链上确定性推导，原始调用者被登记为实例创建者。
+# 生命周期：实例创建者可随时 disable/enable 自己名下的实例；停用后引擎会
+#       拒绝任何人（包括创建者）调用该实例，直到重新启用。
+# 可见性：all_instances / stats 对所有用户开放，可区分每个实例的创建者。
+
+def init(code, kind=""):
+    require(state.get("is_factory") is None, "工厂已初始化")
+    require(isinstance(code, str) and len(code.strip()) > 0, "子合约代码不能为空")
+    state["is_factory"] = True
+    state["child_code"] = code
+    state["kind"] = str(kind or "")
+    state["total"] = 0
+    state["active_count"] = 0
+    state["instances"] = []
+    state["creator_idx"] = {}
+    state["owner"] = msg.sender
+    emit("FactoryCreated", kind=state["kind"], by=msg.sender)
+
+def issue(label="", *args):
+    """发行一个实例。第一个参数为实例标签，其余参数传给子合约 init。"""
+    addr = deploy_contract(state["child_code"], *args)
+    total = int(state.get("total", 0)) + 1
+    state["total"] = total
+    state["active_count"] = int(state.get("active_count", 0)) + 1
+    record = {
+        "address": addr,
+        "creator": msg.sender,
+        "label": str(label or ""),
+        "active": True,
+        "index": total,
+    }
+    instances = list(state.get("instances", []))
+    instances.append(record)
+    state["instances"] = instances
+    idx = dict(state.get("creator_idx", {}))
+    mine = list(idx.get(msg.sender, []))
+    mine.append(addr)
+    idx[msg.sender] = mine
+    state["creator_idx"] = idx
+    state["rec_" + addr] = record
+    emit("Issued", address=addr, creator=msg.sender, index=total,
+         label=record["label"])
+    return addr
+
+def issue_many(n, label=""):
+    """一键批量发行 n 个相同种类的实例，返回新实例地址列表。"""
+    n = int(n)
+    require(n > 0, "数量必须为正")
+    require(n <= 50, "单次最多发行 50 个实例")
+    addresses = []
+    i = 0
+    while i < n:
+        addresses.append(issue(label))
+        i += 1
+    emit("BatchIssued", creator=msg.sender, count=n)
+    return addresses
+
+def _require_owner_of(addr):
+    rec = state.get("rec_" + str(addr))
+    require(rec is not None, "实例不存在")
+    require(rec.get("creator") == msg.sender, "只有实例创建者可操作")
+    return rec
+
+def disable(addr):
+    """停用自己名下的实例（停用后该实例无法被调用）。"""
+    rec = _require_owner_of(addr)
+    require(rec.get("active") is True, "实例已处于停用状态")
+    rec["active"] = False
+    state["rec_" + str(addr)] = rec
+    state["active_count"] = int(state.get("active_count", 0)) - 1
+    instances = list(state.get("instances", []))
+    for i in range(len(instances)):
+        if instances[i].get("address") == str(addr):
+            instances[i] = rec
+    state["instances"] = instances
+    emit("Disabled", address=addr, creator=msg.sender)
+
+def enable(addr):
+    """重新启用自己名下的实例。"""
+    rec = _require_owner_of(addr)
+    require(rec.get("active") is False, "实例已处于运行状态")
+    rec["active"] = True
+    state["rec_" + str(addr)] = rec
+    state["active_count"] = int(state.get("active_count", 0)) + 1
+    instances = list(state.get("instances", []))
+    for i in range(len(instances)):
+        if instances[i].get("address") == str(addr):
+            instances[i] = rec
+    state["instances"] = instances
+    emit("Enabled", address=addr, creator=msg.sender)
+
+def is_instance_active(addr):
+    """引擎在调用每个实例前通过本视图判断其是否运行中。"""
+    rec = state.get("rec_" + str(addr))
+    if rec is None:
+        return False
+    return rec.get("active") is True
+
+def instance_info(addr):
+    return state.get("rec_" + str(addr), None)
+
+def all_instances():
+    """全部已发行实例的完整登记列表（含创建者与运行状态）。"""
+    return list(state.get("instances", []))
+
+def instances_of(creator):
+    """查询某个创建者名下发行过的全部实例地址。"""
+    return list(dict(state.get("creator_idx", {})).get(creator, []))
+
+def stats():
+    """整体统计：累计发行、运行中、已停用。"""
+    total = int(state.get("total", 0))
+    active = int(state.get("active_count", 0))
+    return {"kind": state.get("kind", ""),
+            "total": total,
+            "active": active,
+            "disabled": total - active}
+''',
+    },
+    {
+        "name": "service",
+        "title": "可托管服务实例（工厂子合约示例）",
+        "category": "工厂",
+        "description": "适合被工厂批量发行的子合约：每个实例带名称与编号，"
+                       "支持计数，初始化时记录所属工厂。",
+        "constructor": [
+            {"name": "name", "type": "string", "desc": "实例名称"},
+        ],
+        "functions": [
+            {"name": "tick", "desc": "服务计数 +1", "params": []},
+            {"name": "info", "desc": "查询实例信息", "params": []},
+        ],
+        "source": '''# 可托管服务实例：由工厂批量发行，记录创建者与所属工厂
+def init(name="service"):
+    state["name"] = str(name)
+    state["ticks"] = 0
+    state["creator"] = msg.sender
+    state["factory"] = this_factory()
+    emit("ServiceStarted", name=state["name"], by=msg.sender)
+
+def tick():
+    state["ticks"] = state.get("ticks", 0) + 1
+    emit("Tick", name=state.get("name"), ticks=state["ticks"], by=msg.sender)
+
+def info():
+    return {"name": state.get("name"), "ticks": state.get("ticks", 0),
+            "creator": state.get("creator"),
+            "factory": state.get("factory")}
+''',
+    },
 ]
 
 

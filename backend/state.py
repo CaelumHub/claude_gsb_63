@@ -72,13 +72,18 @@ class WorldState:
     def contract(self, address):
         return self.contracts.get(address)
 
-    def create_contract(self, address, code, creator, storage=None):
-        self.contracts[address] = {
+    def create_contract(self, address, code, creator, storage=None,
+                        factory=None):
+        record = {
             "code": code,
             "storage": storage or {},
             "creator": creator,
         }
-        return self.contracts[address]
+        if factory:
+            # Address of the factory contract that minted this instance.
+            record["factory"] = factory
+        self.contracts[address] = record
+        return record
 
     def contract_storage(self, address):
         c = self.contract(address)
@@ -90,14 +95,18 @@ class WorldState:
     def _for_hash(self):
         # Events and non-consensus metadata are deliberately excluded.  A
         # contract's *balance* lives in ``accounts`` (single source of truth).
-        contracts = {
-            addr: {
+        contracts = {}
+        for addr, c in sorted(self.contracts.items()):
+            record = {
                 "code": c["code"],
                 "storage": c["storage"],
                 "creator": c.get("creator"),
             }
-            for addr, c in sorted(self.contracts.items())
-        }
+            # Only factory-minted instances carry the extra field, so ordinary
+            # deployments hash exactly as before.
+            if c.get("factory"):
+                record["factory"] = c["factory"]
+            contracts[addr] = record
         return {"accounts": self.accounts, "contracts": contracts}
 
     def root(self):
@@ -110,17 +119,17 @@ class WorldState:
         )
 
     def to_dict(self):
-        return {
-            "accounts": self.accounts,
-            "contracts": {
-                addr: {
-                    "code": c["code"],
-                    "storage": c["storage"],
-                    "creator": c.get("creator"),
-                }
-                for addr, c in self.contracts.items()
-            },
-        }
+        contracts = {}
+        for addr, c in self.contracts.items():
+            record = {
+                "code": c["code"],
+                "storage": c["storage"],
+                "creator": c.get("creator"),
+            }
+            if c.get("factory"):
+                record["factory"] = c["factory"]
+            contracts[addr] = record
+        return {"accounts": self.accounts, "contracts": contracts}
 
     @staticmethod
     def from_dict(d):

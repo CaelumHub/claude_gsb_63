@@ -20,7 +20,7 @@ from .templates import template_catalog, get_template, TEMPLATES
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "frontend")
 PAGES = ["index", "wallet", "txpool", "explorer", "deploy", "interact",
-         "nodes", "network", "stats", "admin", "templates"]
+         "nodes", "network", "stats", "admin", "templates", "factory"]
 
 
 def _json(payload, status=200):
@@ -394,6 +394,8 @@ def create_app(node):
         for addr, c in st.contracts.items():
             out.append({
                 "address": addr, "creator": c.get("creator"),
+                "factory": c.get("factory"),
+                "is_factory": bool(c.get("storage", {}).get("is_factory")),
                 "code": c["code"],
                 "storage": c["storage"],
                 "balance": st.balance(addr),
@@ -410,6 +412,8 @@ def create_app(node):
         events = node.contract_events(addr)
         return _json({
             "ok": True, "address": addr, "creator": c.get("creator"),
+            "factory": c.get("factory"),
+            "is_factory": bool(c.get("storage", {}).get("is_factory")),
             "code": c["code"], "storage": c["storage"],
             "balance": st.balance(addr), "events": events[-200:],
         })

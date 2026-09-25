@@ -289,6 +289,7 @@ class Node:
             data = {
                 "address": addr,
                 "creator": c.get("creator"),
+                "factory": c.get("factory"),
                 "code": c.get("code"),
                 "storage": c.get("storage"),
                 "balance": st.balance(addr),
